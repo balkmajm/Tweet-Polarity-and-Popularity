@@ -1,0 +1,266 @@
+---
+title: "DS710 - Final Project"
+author: "Jared Balkman"
+date: "12/13/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, dev = 'png')
+```
+
+TWITTER SENTIMENT ANALYSIS: POLARITY VS POPULARITY
+This project aims to investigate what, if any, relationship exists between the polarity, or positive/negative sentiment of a tweet, and that tweet's popularity as measured by likes and retweets.
+
+First we'll load some libraries:
+```{r}
+library(readr)
+library(dplyr)
+library(ggformula)
+library(car)
+library(coefplot)
+library(ggpubr)
+```
+The data to be analyzed consist of 9149 unique observations of 5 variables:
+
+num_retweets: the number of retweets of an original tweet
+
+num_likes: the number of times an original tweet was liked (aka favorited)
+
+num_followers: the number of followers of the author of the original tweet
+
+subjectivity: the subjectivity of the text of a tweet, as calculated by the textblob.subjectivity function. Values in range (0.0, 1.0) (0=objective, 1=subjective)
+
+polarity: the polarity of the text of a tweet, as calculated by the SentimentIntensityAnalyzer.polarity_scores function from the vaderSentiment Python package. The function calculates separate scores for positive, neutral, and negative aspects of a tweet, and averages them to compute one compound score representing overall sentiment of a tweet. This compound score is what was used here. Values in range (-0.9884, 0.9992) (-1=negative, 0=neutral, 1=positive)
+
+5546 rows came from original tweets. 3603 came from retweets, but in these cases the original tweet data for all attributes was collected from the 'retweeted_status' dictionary in the tweet Status object.
+
+Load the dataset:
+```{r}
+data <- read_csv('twitter_data_for_r.csv')
+head(data, 10)
+```
+The tweets are created first (at which point, theoretically, they would take on their polarity and subjectivity scores), and the likes and retweets happen after, so for our analysis we want retweets and likes to be our dependent variables, and polarity and subjectivity our independent variables. Follower count we may wish to use as a control variable, since it may have an effect on number of likes and retweets. Since I am not confident performing multivariate regression (which would be called for since we have multiple independent and multiple dependent variables), I will attempt separate multiple regressions for likes and retweets.
+
+My hypotheses are as follows:
+
+H_0: There is no relationship between sentiment (measured by polarity and subjectivity) of a tweet and the popularity (measured by likes and retweets) of the tweet.
+
+H_1: There is a statistically significant relationship between tweet sentiment and popularity.
+
+We should first see if the assumption for multiple linear regression are satisfied. These assumptions include:
+
+1) Linearity of relationship between y variable and x variables
+2) Independence of x variables
+3) Normal distribution of residuals
+4) Homoscedasticity (variance of dependent variable remains constant as ind. var. changes)
+
+First, it seems that it is rather difficult to test for the independence of two continuous variables; I couldn't find a good way to do this without binning the data, which seemed kind of artificial. We could look at a scatter plot with some correlation information to get an idea:
+
+```{r}
+data %>%
+  gf_point(subjectivity ~ polarity, alpha = 0.1, color = "blue",
+           xlab = "Polarity", ylab = "Subjectivity") %>%
+  gf_smooth(subjectivity ~ polarity, color = 'red')
+```
+And a correlation test:
+```{r}
+cor.test(data$polarity, data$subjectivity)
+```
+So we have a significant correlation, but it's awfully weak. Note also we have a lot of 0- and 1-values for subjectivity as well as 0-values for polarity, something I will look at more below.
+
+We can examine assumptions 1), 3), and 4) using the plot() function, and also look at the coefficients:
+```{r}
+model_likes <- lm(num_likes ~ polarity + subjectivity, data = data)
+
+par(mfrow = c(2,2))
+plot(model_likes)
+
+summary(model_likes)
+```
+These plots indicate a transformation is in order. We'll try a log(x+1) transformation of the dependent variable to account for the exponential-looking skewing (and values of 0):
+```{r}
+model_likes <- lm(log1p(num_likes) ~ polarity + subjectivity, data = data)
+
+par(mfrow = c(2,2))
+plot(model_likes)
+
+summary(model_likes)
+```
+This looks better, but we might be violating the normality assumption. We can try adding in number of followers as a control variable since it would certainly seem to affect number of likes and retweets. First we can look at correlations of dependent variables with num_followers:
+
+```{r}
+cor.test(data$num_followers, log1p(data$num_likes))
+```
+```{r}
+cor.test(data$num_followers, log1p(data$num_retweets))
+```
+Both correlations with number of followers are significant with p-values near zero, so we should introduce this into the model:
+
+```{r}
+model_likes <- lm(log1p(num_likes) ~ polarity + subjectivity + num_followers, data = data)
+
+par(mfrow = c(2,2))
+plot(model_likes)
+
+summary(model_likes)
+```
+The coefficients are still significant, but the diagnostic plots look a little strange. We'll try one more model that accounts for possible interactions between independent variables:
+
+```{r}
+model_likes <- lm(log1p(num_likes) ~ polarity + subjectivity + num_followers +
+                  polarity:subjectivity + polarity:num_followers +
+                  subjectivity:num_followers, data = data)
+
+par(mfrow = c(2,2))
+plot(model_likes)
+
+summary(model_likes)
+```
+
+Here the diagnostic plots are pretty similar to the previous model. All the independent variables remain significant, and there are also significant interactions (subjectivity:num_followers is perhaps interesting). Let's proceed with retweets using this same model and see if there's anything different:
+
+```{r}
+model_retweets <- lm(log1p(num_retweets) ~ polarity + subjectivity + num_followers +
+                    polarity:subjectivity + polarity:num_followers +
+                    subjectivity:num_followers, data = data)
+
+par(mfrow = c(2,2))
+plot(model_retweets)
+
+summary(model_retweets)
+```
+
+Perhaps not surprisingly, we have similar results for retweet count. One last thing to try is removing a few of the outliers. The rows below constitute three rounds of outlier identification and removal based on which points displayed their row numbers in the various diagnostic plots:
+
+```{r}
+data[c(18, 167, 563, 874, 1463, 1472, 1883, 2710, 2266, 4933, 6863, 7406),] = NA
+
+model_likes <- lm(log1p(num_likes) ~ polarity + subjectivity + num_followers +
+                  polarity:subjectivity + polarity:num_followers +
+                  subjectivity:num_followers, data = data)
+
+par(mfrow = c(2,2))
+plot(model_likes)
+
+summary(model_likes)
+
+model_retweets <- lm(log1p(num_retweets) ~ polarity + subjectivity + num_followers +
+                    polarity:subjectivity + polarity:num_followers +
+                    subjectivity:num_followers, data = data)
+
+par(mfrow = c(2,2))
+plot(model_retweets)
+
+summary(model_retweets)
+```
+
+The profile of significant variables stays the same, with number of followers and intercept significant at the highest level (i.e. lowest p-value) as subjectivity:num_followers. We have evidence to reject the null hypothesis and claim that there is a statistically significant relationship between the sentiment of a tweet and its popularity.
+
+On the other hand, we have some visual evidence in the diagnostic plots that complicates matters somewhat. We haven't really been able to get a good Q-Q plot, so we might be violating the normality assumption here. It's possible 
+
+So what about all those zeros for polarity and subjectivity (and ones for subjectivity)?
+```{r}
+data %>%
+  gf_histogram(~polarity, color = 'blue', fill = 'blue') %>%
+  gf_histogram(~subjectivity, color= 'red', fill = 'red') %>%
+  gf_labs(title = 'Histograms for Polarity (blue) and Subjectivity (red) with Zero Values, 
+          n=9149', x='Polarity (blue), Subjectivity (red)', y='count')
+```
+ On the one hand, it doesn't seem right to remove them, since they are perfectly valid data points, tweets that were or weren't liked or retweeted with a polarity or subjectivity score happening to equal zero. On the other hand, we could make the argument that we aren't really interested as much in neutral tweets, but rather only the ones with some non-zero sentiment value. It's worth at least exploring (we'll hold off on the 1-values for subjectivity though).
+
+```{r}
+non_zero_rows <- apply(data, 1, function(polarity) all(polarity != 0))
+non_zero_rows <- apply(data, 1, function(subjectivity) all(subjectivity != 0))
+
+non_zero_data <- data[non_zero_rows,]
+non_zero_data
+```
+
+```{r}
+non_zero_data %>%
+  gf_histogram(~polarity, color = 'blue', fill = 'blue') %>%
+  gf_histogram(~subjectivity, color= 'red', fill = 'red') %>%
+  gf_labs(title = 'Histograms for Polarity (blue) and Subjectivity (red), n=2021',
+          x='Polarity, Subjectivity', y='count')
+```
+This definitely changes things. First, we lost over 7000 rows. Subjectivity looks like it could come from a normal distribution (aside from the excess 1-values), and polarity looks bimodal. But, since it looks symmetrical about 0, it might look pretty normal if we took the absolute value:
+
+```{r}
+non_zero_data %>%
+  gf_histogram(~abs(polarity), color = 'blue', fill = 'blue') %>%
+  gf_histogram(~subjectivity, color= 'red', fill = 'red') %>%
+  gf_labs(title = 'Histograms for Absolute Value of Polarity (blue) and Subjectivity (red)
+          without Zero Values, n=2021',
+          x='Abs(Polarity), Subjectivity', y='count')
+```
+
+This transformation also lines it up pretty well with subjectivity values. Let's see what happens with the model:
+
+```{r}
+model_likes <- lm(log1p(num_likes) ~ abs(polarity) + subjectivity + num_followers +
+                  abs(polarity):subjectivity + abs(polarity):num_followers +
+                  subjectivity:num_followers, data = data)
+
+par(mfrow = c(2,2))
+plot(model_likes)
+
+summary(model_likes)
+
+model_retweets <- lm(log1p(num_retweets) ~ abs(polarity) + subjectivity + num_followers +
+                    abs(polarity):subjectivity + abs(polarity):num_followers +
+                    subjectivity:num_followers, data = data)
+
+par(mfrow = c(2,2))
+plot(model_retweets)
+
+summary(model_retweets)
+```
+It turns out not much changed with our model, other than changes in the significance of abs(polarity) and subjectivity, and the loss of significance of the abs(polarity):subjectivity interaction. The coefficients for abs(polarity) and subjectivity are higher with 0-values removed (and the transformation on polarity, which we might call 'strength of polarity' or something along those lines).
+
+Finally, we do still have evidence to reject the null hypothesis, and claim that there is a significant effect of polarity on the popularity of a tweet. But it should also be noted that we may not have landed on the best model for this dataset.
+
+What remains is the best way to visualize this model. A good summation of the model might be done with a coefficient plot comprising the two models:
+```{r}
+multiplot(model_likes, model_retweets, title = 'Significant Coefficients for Likes and
+          Retweets Models', dodgeHeight = 0.5, single=TRUE, numberAngle = 0, sort =
+          'magnitude', decreasing = TRUE, names = c('Likes', 'Retweets'), coefficients =
+          c('abs(polarity)', 'subjectivity', 'num_followers', 'subjectivity:num_followers'))
+```
+
+```{r}
+#Export coefficient plot to pdf for the executive summary
+pdf("significant_coefficient_plot.pdf")
+multiplot(model_likes, model_retweets, title = 'Fig. 1: Significant Coefficients for Likes
+          and Retweets Models', dodgeHeight = 0.5, single=TRUE, numberAngle = 0, sort =
+          'magnitude', decreasing = TRUE, names = c('Likes', 'Retweets'), coefficients =
+          c('abs(polarity)', 'subjectivity', 'num_followers', 'subjectivity:num_followers'))
+dev.off()
+
+pdf("histograms_with_Zeros.pdf")
+data %>%
+  gf_histogram(~polarity, color = 'blue', fill = 'blue') %>%
+  gf_histogram(~subjectivity, color= 'red', fill = 'red') %>%
+  gf_labs(title = 'Fig. 2: Histograms for Polarity (blue) and Subjectivity (red) with Zero
+          Values, n=9149', x='Polarity (blue), Subjectivity (red)', y='count')
+dev.off()
+
+pdf("histograms_without_zeros.pdf")
+non_zero_data %>%
+  gf_histogram(~abs(polarity), color = 'blue', fill = 'blue') %>%
+  gf_histogram(~subjectivity, color= 'red', fill = 'red') %>%
+  gf_labs(title = 'Fig. 3: Histograms for Absolute Value of Polarity (blue) and Subjectivity
+          (red) without Zero Values, n=2021', x='Abs(Polarity), Subjectivity', y='count')
+dev.off()
+```
+
+
+
+
+
+
+
+
+
